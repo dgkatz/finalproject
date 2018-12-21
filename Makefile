@@ -1,10 +1,6 @@
-all: webserv security
+all: webserv
 clean:
-	-rm -f webserv security data.csv histogram.png
-
-security: security.c
-	gcc -Wall -o security security.c
-	chmod +x security
+	-rm -f webserv data.csv histogram.png
 
 webserv: webserv.c
-	gcc -Wall -o webserv webserv.c
+	gcc -Wall webserv.c my_threads.c -o webserv

@@ -12,6 +12,7 @@
 #include <time.h>
 #include <limits.h>
 #include <termios.h>
+#include "my_threads.h"
 
 /* webserv.c implements a simple HTTP 1.1 server 
 with short-lived connections using sockets 
@@ -396,6 +397,9 @@ char* parse_query(char* requested_path) {
 // determines the method of the request (eg. GET) and the requested file
 // then calls the appropriate function to deal with the request
 void handle_request(int client, char* request) {
+    printf("in handling resquests\n");
+    printf("client id is %d\n", client);
+    printf("ok al least we can print that \n");
     // parse the request by getting the first and second word
     char method[SMALL_BUF];
     char temp_path[PATH_MAX];
@@ -429,11 +433,28 @@ void handle_request(int client, char* request) {
     }
 }
 
+void serve_request(void* param) {
+    printf("now serving request\n");
+    int* int_param = param;
+    int client_fd = *int_param;
+    char* buf = malloc(BUF_SIZE);
+    ssize_t n_read = recv(client_fd, buf, BUF_SIZE, 0);
+    log_to_stdout(buf, n_read);
+    printf("client id is %d and request is %s\n", client_fd, buf);
+    //handle_request(client_fd, buf);
+    handle_dir(client_fd, "./");
+    close(client_fd);
+    printf("request served\n");
+    my_thr_exit(); // terminate the thread   
+}
+
 // code adapted from APUE textbook (pg 617-618)
-// accept connections and fork a child process to serve requests
-int serve(int server) {
+// if threads == 0, accept connections and fork a child process to serve requests
+// if threads == 1, accept connections and create a thread for each request
+int serve(int server, int threads) {
     int client_fd, status;
     pid_t pid;
+    int thread_id = 0;
     for(;;) {
         // accept a new connection (from our local machine)
         // accept will block if no connections are pending
@@ -441,27 +462,35 @@ int serve(int server) {
             perror("Accept error");
             exit(1);
         }
-        // process the client's request by forking a child process
-        if ((pid = fork()) < 0) {
-            perror("fork error");
-            exit(1);
-        } else if (pid == 0) {
-            close(server);
-            char buf[BUF_SIZE];
-            ssize_t n_read = recv(client_fd, buf, BUF_SIZE, 0);
-            log_to_stdout(buf, n_read);
-            handle_request(client_fd, buf);
-            close(client_fd);
-            exit(0); // terminate the child process
+        if (threads) {
+            int* client_ptr = malloc(sizeof(int));
+            *client_ptr = client_fd;
+            my_thr_create(thread_id++, serve_request, client_ptr);
+            my_thr_start();
+            free(client_ptr);
         } else {
-            /* parent */
-            close(client_fd); // close the client fd because the child still maintains a copy
-            waitpid(pid, &status, 0);
+            // process the client's request by forking a child process
+            if ((pid = fork()) < 0) {
+                perror("fork error");
+                exit(1);
+            } else if (pid == 0) {
+                close(server);
+                char buf[BUF_SIZE];
+                ssize_t n_read = recv(client_fd, buf, BUF_SIZE, 0);
+                log_to_stdout(buf, n_read);
+                handle_request(client_fd, buf);
+                close(client_fd);
+                exit(0); // terminate the child process
+            } else {
+                /* parent */
+                close(client_fd); // close the client fd because the child still maintains a copy
+                waitpid(pid, &status, 0);
+            }
         }
     }
 }
 
-int start_server(uint16_t port) {
+int start_server(uint16_t port, int threads) {
     // create a socket for our webserver
     int webserver;
     webserver = socket(AF_INET, SOCK_STREAM, 0);
@@ -484,7 +513,7 @@ int start_server(uint16_t port) {
         return 1;
     }
     
-    serve(webserver);
+    serve(webserver, threads);
 
     // might want to set up a signal handler for sigint to call close
     close(webserver);
@@ -493,14 +522,15 @@ int start_server(uint16_t port) {
 
 
 int main(int argc, char const *argv[]) {
-    if (argc != 2) {
+    if (argc < 2) {
         printf("Error: to start server use: $./webserv port-number\n");
         exit(1);
     }   
     uint16_t port = (uint16_t) strtol(argv[1], NULL, 10);
+    int threads = (int) strtol(argv[2], NULL, 10);
     printf("Running on http://127.0.0.1:%u/ (Press CTRL+C to quit)\n", port);
 
-    if (start_server(port) != 0) {
+    if (start_server(port, threads) != 0) {
         exit(1);
     }
     return 0;
